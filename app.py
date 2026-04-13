@@ -7,12 +7,12 @@ Gemini API 対応版 / SharePoint自動アップロード対応
 import streamlit as st
 import pdfplumber
 import pandas as pd
-import google.generativeai as genai
 import urllib.request
 import json
 import io
 import base64
 import requests
+import fitz  # PyMuPDF
 from PIL import Image
 from datetime import datetime
 
@@ -80,6 +80,14 @@ EXTRACTION_PROMPT = """この領収書・レシート・請求書の画像また
 # ============================
 def get_file_ext(filename: str) -> str:
     return filename.rsplit(".", 1)[-1].lower()
+
+def render_pdf_as_image(pdf_bytes: bytes, page_num: int = 0) -> bytes:
+    """PDFの指定ページを画像（PNG）として返す"""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[page_num]
+    mat = fitz.Matrix(2.0, 2.0)  # 2倍ズームで高画質
+    pix = page.get_pixmap(matrix=mat)
+    return pix.tobytes("png")
 
 def extract_text_from_pdf(pdf_file) -> str:
     text = ""
@@ -345,11 +353,16 @@ if "results" in st.session_state and st.session_state["results"]:
     col_table, col_preview = st.columns([6, 4])
 
     with col_table:
-        st.caption("👁️ 列のチェックを入れると右側に証憑が表示されます。科目・金額は直接編集できます。")
+        st.caption("👁️ 列のチェックを入れると右側に証憑が切り替わります。科目・金額は直接編集できます。")
         display_cols = [c for c in MF_COLUMNS if c in results[0]]
+
+        # 選択中の行インデックスをセッションで管理
+        if "selected_row_idx" not in st.session_state:
+            st.session_state["selected_row_idx"] = 0
+        selected_idx = min(st.session_state["selected_row_idx"], len(results) - 1)
+
         df_base = pd.DataFrame(results)[["_ファイル名"] + display_cols]
-        # 先頭行だけチェック済み、残りはFalse
-        df_base.insert(0, "_表示", [i == 0 for i in range(len(df_base))])
+        df_base.insert(0, "_表示", [i == selected_idx for i in range(len(df_base))])
 
         edited_df = st.data_editor(
             df_base,
@@ -367,16 +380,27 @@ if "results" in st.session_state and st.session_state["results"]:
             num_rows="dynamic",
             use_container_width=True,
             height=500,
+            hide_index=True,
         )
 
-        # チェックされた行のファイル名を取得（複数チェックは最後の1件を優先）
-        checked = edited_df[edited_df["_表示"] == True]
-        if not checked.empty:
-            preview_file = checked.iloc[-1]["_ファイル名"]
-        elif len(edited_df) > 0:
-            preview_file = edited_df.iloc[0]["_ファイル名"]
+        # チェック状態を解析してラジオボタン式に制御
+        checked_indices = edited_df[edited_df["_表示"] == True].index.tolist()
+        if len(checked_indices) == 0:
+            # 全部外れたら現在の選択を維持
+            pass
+        elif len(checked_indices) == 1:
+            new_idx = checked_indices[0]
+            if new_idx != selected_idx:
+                st.session_state["selected_row_idx"] = new_idx
+                st.rerun()
         else:
-            preview_file = None
+            # 複数チェックされた場合は新しく選んだ行だけ残す
+            newly = [i for i in checked_indices if i != selected_idx]
+            if newly:
+                st.session_state["selected_row_idx"] = newly[-1]
+                st.rerun()
+
+        preview_file = edited_df.iloc[selected_idx]["_ファイル名"] if len(edited_df) > 0 else None
 
     with col_preview:
         st.markdown("**🔍 元ファイルプレビュー**")
@@ -388,13 +412,14 @@ if "results" in st.session_state and st.session_state["results"]:
             b = file_bytes[preview_file]
 
             if ext == "pdf":
-                b64_pdf = base64.b64encode(b).decode("utf-8")
-                st.markdown(
-                    f'<iframe src="data:application/pdf;base64,{b64_pdf}" '
-                    f'width="100%" height="520px" '
-                    f'style="border:1px solid #ddd; border-radius:6px;"></iframe>',
-                    unsafe_allow_html=True
-                )
+                try:
+                    img_bytes = render_pdf_as_image(b)
+                    st.image(img_bytes, use_column_width=True)
+                    page_count = len(fitz.open(stream=b, filetype="pdf"))
+                    if page_count > 1:
+                        st.caption(f"※ 1ページ目を表示中（全{page_count}ページ）")
+                except Exception as e:
+                    st.warning(f"PDFプレビューエラー: {e}")
             else:
                 st.image(b, use_column_width=True)
         else:
