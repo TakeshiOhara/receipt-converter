@@ -480,5 +480,3 @@ if "results" in st.session_state and st.session_state["results"]:
     st.markdown("---")
     st.info("MFへのインポート手順：会計帳簿 → 仕訳帳 → インポート → 仕訳帳 → CSVを選択")
     st.metric("変換件数", f"{len(export_df)} 件")
-")
-    st.metric("変換件数", f"{len(export_df)} 件")
