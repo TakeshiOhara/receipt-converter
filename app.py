@@ -353,7 +353,7 @@ if "results" in st.session_state and st.session_state["results"]:
     col_table, col_preview = st.columns([6, 4])
 
     with col_table:
-        st.caption("👁️ 列のチェックを入れると右側に証憑が切り替わります。科目・金額は直接編集できます。")
+        st.caption("📝 科目・金額は表内で直接編集できます。プレビュー表示する証憑は右側のラジオボタンで選択してください。")
         display_cols = [c for c in MF_COLUMNS if c in results[0]]
 
         # 選択中の行インデックスをセッションで管理
@@ -362,12 +362,10 @@ if "results" in st.session_state and st.session_state["results"]:
         selected_idx = min(st.session_state["selected_row_idx"], len(results) - 1)
 
         df_base = pd.DataFrame(results)[["_ファイル名"] + display_cols]
-        df_base.insert(0, "_表示", [i == selected_idx for i in range(len(df_base))])
 
         edited_df = st.data_editor(
             df_base,
             column_config={
-                "_表示": st.column_config.CheckboxColumn("👁️", width="small"),
                 "_ファイル名": st.column_config.TextColumn("ファイル名", disabled=True, width="medium"),
                 "取引日": st.column_config.TextColumn("取引日", width="small"),
                 "借方勘定科目": st.column_config.SelectboxColumn("借方勘定科目", options=DEBIT_ACCOUNTS),
@@ -381,29 +379,37 @@ if "results" in st.session_state and st.session_state["results"]:
             use_container_width=True,
             height=500,
             hide_index=True,
+            key="mf_data_editor",
         )
-
-        # チェック状態を解析してラジオボタン式に制御
-        checked_indices = edited_df[edited_df["_表示"] == True].index.tolist()
-        if len(checked_indices) == 0:
-            # 全部外れたら現在の選択を維持
-            pass
-        elif len(checked_indices) == 1:
-            new_idx = checked_indices[0]
-            if new_idx != selected_idx:
-                st.session_state["selected_row_idx"] = new_idx
-                st.rerun()
-        else:
-            # 複数チェックされた場合は新しく選んだ行だけ残す
-            newly = [i for i in checked_indices if i != selected_idx]
-            if newly:
-                st.session_state["selected_row_idx"] = newly[-1]
-                st.rerun()
-
-        preview_file = edited_df.iloc[selected_idx]["_ファイル名"] if len(edited_df) > 0 else None
 
     with col_preview:
         st.markdown("**🔍 元ファイルプレビュー**")
+
+        # ラジオボタンでプレビュー対象の証憑を選択（真のラジオボタン）
+        file_options = edited_df["_ファイル名"].tolist() if len(edited_df) > 0 else []
+
+        if file_options:
+            # 表示ラベルは「No.行番号: ファイル名」形式にして視認性UP
+            label_map = {f"{i+1}. {name}": i for i, name in enumerate(file_options)}
+            labels = list(label_map.keys())
+            default_label = labels[min(selected_idx, len(labels) - 1)]
+
+            chosen_label = st.radio(
+                "プレビューする証憑",
+                options=labels,
+                index=labels.index(default_label),
+                key="preview_radio",
+                label_visibility="collapsed",
+            )
+            new_idx = label_map[chosen_label]
+            if new_idx != selected_idx:
+                st.session_state["selected_row_idx"] = new_idx
+                st.rerun()
+
+            preview_file = file_options[new_idx]
+        else:
+            preview_file = None
+
         if preview_file:
             st.caption(f"📄 {preview_file}")
 
@@ -423,7 +429,7 @@ if "results" in st.session_state and st.session_state["results"]:
             else:
                 st.image(b, use_column_width=True)
         else:
-            st.info("左の表で👁️にチェックを入れると証憑が表示されます")
+            st.info("ラジオボタンで証憑を選択すると表示されます")
 
     with st.expander("📄 抽出テキストを確認"):
         for r in results:
@@ -473,4 +479,6 @@ if "results" in st.session_state and st.session_state["results"]:
 
     st.markdown("---")
     st.info("MFへのインポート手順：会計帳簿 → 仕訳帳 → インポート → 仕訳帳 → CSVを選択")
+    st.metric("変換件数", f"{len(export_df)} 件")
+")
     st.metric("変換件数", f"{len(export_df)} 件")
