@@ -13,6 +13,7 @@ import io
 import base64
 import requests
 import fitz  # PyMuPDF
+import time
 from PIL import Image
 from datetime import datetime
 
@@ -101,25 +102,38 @@ def extract_text_from_pdf(pdf_file) -> str:
         text = f"[PDFテキスト抽出エラー: {e}]"
     return text.strip()
 
-def call_gemini_api(api_key: str, parts: list) -> dict:
-    """Gemini REST APIを呼び出してJSONを返す"""
+def call_gemini_api(api_key: str, parts: list, max_retries: int = 3) -> dict:
+    """Gemini REST APIを呼び出してJSONを返す（503/429時は指数バックオフでリトライ）"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     payload = json.dumps(
         {"contents": [{"parts": parts}]},
         ensure_ascii=False
     ).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        method="POST"
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8")
-        raise Exception(f"HTTP {e.code}: {error_body}")
+
+    last_error = None
+    for attempt in range(max_retries):
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            # 成功したらループを抜ける
+            break
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8")
+            last_error = f"HTTP {e.code}: {error_body}"
+            # 503（過負荷）・429（レート制限）はリトライ対象
+            if e.code in (503, 429) and attempt < max_retries - 1:
+                wait_sec = 2 ** attempt  # 1回目:1秒, 2回目:2秒, 3回目:4秒
+                time.sleep(wait_sec)
+                continue
+            raise Exception(last_error)
+    else:
+        raise Exception(f"最大リトライ回数({max_retries})超過: {last_error}")
 
     response_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
     if "```json" in response_text:
