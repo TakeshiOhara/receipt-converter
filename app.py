@@ -140,7 +140,8 @@ def call_gemini_api(api_key: str, parts: list, max_retries: int = 3) -> dict:
         response_text = response_text.split("```json")[1].split("```")[0].strip()
     elif "```" in response_text:
         response_text = response_text.split("```")[1].split("```")[0].strip()
-    return json.loads(response_text)
+    usage = result.get("usageMetadata", {})
+    return json.loads(response_text), usage
 
 def extract_from_pdf(uploaded_file, api_key: str) -> dict:
     """PDFのテキストを抽出してGeminiに送る。画像PDFの場合はページを画像変換して送る"""
@@ -153,7 +154,8 @@ def extract_from_pdf(uploaded_file, api_key: str) -> dict:
     if text.strip():
         # テキストPDF：抽出テキストをそのまま送信
         parts = [{"text": EXTRACTION_PROMPT + "\nテキスト:\n" + text[:3000]}]
-        return call_gemini_api(api_key, parts), text[:500]
+        data, usage = call_gemini_api(api_key, parts)
+        return data, text[:500], usage
     else:
         # 画像PDF（スキャン等）：1ページ目を画像化してGeminiに送信
         img_bytes = render_pdf_as_image(pdf_bytes)
@@ -162,7 +164,8 @@ def extract_from_pdf(uploaded_file, api_key: str) -> dict:
             {"text": EXTRACTION_PROMPT},
             {"inline_data": {"mime_type": "image/png", "data": image_data}}
         ]
-        return call_gemini_api(api_key, parts), "[画像PDF - 画像として解析]"
+        data, usage = call_gemini_api(api_key, parts)
+        return data, "[画像PDF - 画像として解析]", usage
 
 def compress_image(uploaded_file, max_size=(1600, 1600), quality=85) -> bytes:
     """画像をリサイズ・圧縮してJPEGバイトで返す"""
@@ -181,7 +184,8 @@ def extract_from_image(uploaded_file, api_key: str) -> dict:
         {"text": EXTRACTION_PROMPT},
         {"inline_data": {"mime_type": "image/jpeg", "data": image_data}}
     ]
-    return call_gemini_api(api_key, parts), "[画像ファイル]"
+    data, usage = call_gemini_api(api_key, parts)
+    return data, "[画像ファイル]", usage
 
 def build_mf_row(data: dict, default_debit: str, default_credit: str) -> dict:
     amount = int(data.get("税込合計金額", 0))
@@ -337,6 +341,10 @@ if uploaded_files:
         progress = st.progress(0)
         status = st.empty()
 
+        # セッション累計トークンを初期化（変換開始時にリセット）
+        if "usage_total" not in st.session_state:
+            st.session_state["usage_total"] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+
         file_bytes_dict = {}
         for i, uploaded_file in enumerate(uploaded_files):
             status.info(f"処理中: {uploaded_file.name} ({i+1}/{len(uploaded_files)})")
@@ -349,9 +357,14 @@ if uploaded_files:
 
             try:
                 if ext == "pdf":
-                    extracted, preview = extract_from_pdf(uploaded_file, api_key)
+                    extracted, preview, usage = extract_from_pdf(uploaded_file, api_key)
                 else:
-                    extracted, preview = extract_from_image(uploaded_file, api_key)
+                    extracted, preview, usage = extract_from_image(uploaded_file, api_key)
+
+                # トークン使用量を累積
+                st.session_state["usage_total"]["input_tokens"]  += usage.get("promptTokenCount", 0)
+                st.session_state["usage_total"]["output_tokens"] += usage.get("candidatesTokenCount", 0)
+                st.session_state["usage_total"]["calls"] += 1
 
                 row = build_mf_row(extracted, default_debit, default_credit)
                 row["_ファイル名"] = uploaded_file.name
@@ -512,3 +525,21 @@ if "results" in st.session_state and st.session_state["results"]:
     st.markdown("---")
     st.info("MFへのインポート手順：会計帳簿 → 仕訳帳 → インポート → 仕訳帳 → CSVを選択")
     st.metric("変換件数", f"{len(export_df)} 件")
+
+    # ============================
+    # Gemini API 使用量メーター
+    # ============================
+    usage = st.session_state.get("usage_total", {})
+    if usage and usage.get("calls", 0) > 0:
+        inp  = usage.get("input_tokens", 0)
+        out  = usage.get("output_tokens", 0)
+        calls = usage.get("calls", 0)
+        # Gemini 2.5 Flash 料金: 入力 $0.15/1M, 出力 $0.60/1M (参考レート 150円/USD)
+        cost_usd = (inp * 0.15 + out * 0.60) / 1_000_000
+        cost_jpy = cost_usd * 150
+        with st.expander(f"📊 Gemini API 使用量（このセッション: {calls}件処理）", expanded=False):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("入力トークン", f"{inp:,}")
+            c2.metric("出力トークン", f"{out:,}")
+            c3.metric("推定費用", f"約 ¥{cost_jpy:.2f}")
+            st.caption("※ Gemini 2.5 Flash 料金: 入力 $0.15/百万トークン・出力 $0.60/百万トークン（参考レート 150円/USD）。実際の請求は Google Cloud Console でご確認ください。")
