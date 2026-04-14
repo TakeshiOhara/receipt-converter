@@ -143,10 +143,26 @@ def call_gemini_api(api_key: str, parts: list, max_retries: int = 3) -> dict:
     return json.loads(response_text)
 
 def extract_from_pdf(uploaded_file, api_key: str) -> dict:
-    """PDFのテキストを抽出してGeminiに送る"""
-    text = extract_text_from_pdf(uploaded_file)
-    parts = [{"text": EXTRACTION_PROMPT + "\nテキスト:\n" + text[:3000]}]
-    return call_gemini_api(api_key, parts), text[:500]
+    """PDFのテキストを抽出してGeminiに送る。画像PDFの場合はページを画像変換して送る"""
+    uploaded_file.seek(0)
+    pdf_bytes = uploaded_file.read()
+    uploaded_file.seek(0)
+
+    text = extract_text_from_pdf(io.BytesIO(pdf_bytes))
+
+    if text.strip():
+        # テキストPDF：抽出テキストをそのまま送信
+        parts = [{"text": EXTRACTION_PROMPT + "\nテキスト:\n" + text[:3000]}]
+        return call_gemini_api(api_key, parts), text[:500]
+    else:
+        # 画像PDF（スキャン等）：1ページ目を画像化してGeminiに送信
+        img_bytes = render_pdf_as_image(pdf_bytes)
+        image_data = base64.b64encode(img_bytes).decode("utf-8")
+        parts = [
+            {"text": EXTRACTION_PROMPT},
+            {"inline_data": {"mime_type": "image/png", "data": image_data}}
+        ]
+        return call_gemini_api(api_key, parts), "[画像PDF - 画像として解析]"
 
 def compress_image(uploaded_file, max_size=(1600, 1600), quality=85) -> bytes:
     """画像をリサイズ・圧縮してJPEGバイトで返す"""
