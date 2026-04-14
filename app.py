@@ -392,6 +392,8 @@ if "results" in st.session_state and st.session_state["results"]:
         selected_idx = min(st.session_state["selected_row_idx"], len(results) - 1)
 
         df_base = pd.DataFrame(results)[["_ファイル名"] + display_cols]
+        # インデックスを1始まりの行番号に設定（横スクロール時も左端に固定表示される）
+        df_base.index = range(1, len(df_base) + 1)
 
         edited_df = st.data_editor(
             df_base,
@@ -408,7 +410,7 @@ if "results" in st.session_state and st.session_state["results"]:
             num_rows="dynamic",
             use_container_width=True,
             height=500,
-            hide_index=True,
+            hide_index=False,
             key="mf_data_editor",
         )
 
