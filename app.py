@@ -104,7 +104,7 @@ def extract_text_from_pdf(pdf_file) -> str:
 
 # 優先モデルと安定フォールバックモデル
 GEMINI_PRIMARY_MODEL  = "gemini-2.5-flash"
-GEMINI_FALLBACK_MODEL = "gemini-2.0-flash"
+GEMINI_FALLBACK_MODEL = "gemini-1.5-flash"
 
 def _call_gemini_with_model(api_key: str, parts: list, model: str, max_retries: int = 5) -> dict:
     """指定モデルでGemini APIを呼び出す（エラー時は指数バックオフでリトライ）"""
