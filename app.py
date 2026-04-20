@@ -102,16 +102,22 @@ def extract_text_from_pdf(pdf_file) -> str:
         text = f"[PDFテキスト抽出エラー: {e}]"
     return text.strip()
 
-def call_gemini_api(api_key: str, parts: list, max_retries: int = 5) -> dict:
-    """Gemini REST APIを呼び出してJSONを返す（エラー時は指数バックオフで最大5回リトライ）"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+# 優先モデルと安定フォールバックモデル
+GEMINI_PRIMARY_MODEL  = "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.0-flash"
+
+def _call_gemini_with_model(api_key: str, parts: list, model: str, max_retries: int = 5) -> dict:
+    """指定モデルでGemini APIを呼び出す（エラー時は指数バックオフでリトライ）"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     payload = json.dumps(
         {"contents": [{"parts": parts}]},
         ensure_ascii=False
     ).encode("utf-8")
 
-    # リトライ対象のHTTPステータスコード
     RETRYABLE_CODES = {429, 500, 502, 503, 504}
+    # 503専用の長い待機時間（サーバー過負荷は長く待つ必要がある）
+    WAIT_503 = [10, 20, 30, 60, 60]
+    WAIT_OTHER = [2, 4, 8, 16, 32]
 
     last_error = None
     for attempt in range(max_retries):
@@ -124,27 +130,37 @@ def call_gemini_api(api_key: str, parts: list, max_retries: int = 5) -> dict:
         try:
             with urllib.request.urlopen(req, timeout=90) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-            # 成功したらループを抜ける
-            break
+            break  # 成功
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8")
             last_error = f"HTTP {e.code}: {error_body}"
             if e.code in RETRYABLE_CODES and attempt < max_retries - 1:
-                # 2秒, 4秒, 8秒, 16秒 と待機時間を倍増
-                wait_sec = 2 ** (attempt + 1)
+                wait_sec = WAIT_503[attempt] if e.code == 503 else WAIT_OTHER[attempt]
                 time.sleep(wait_sec)
                 continue
             raise Exception(last_error)
         except (urllib.error.URLError, TimeoutError, OSError) as e:
-            # ネットワーク系エラーもリトライ
             last_error = f"ネットワークエラー: {e}"
             if attempt < max_retries - 1:
-                wait_sec = 2 ** (attempt + 1)
-                time.sleep(wait_sec)
+                time.sleep(WAIT_OTHER[attempt])
                 continue
             raise Exception(last_error)
     else:
         raise Exception(f"最大リトライ回数({max_retries})超過: {last_error}")
+
+    return result
+
+def call_gemini_api(api_key: str, parts: list, max_retries: int = 5) -> dict:
+    """Gemini APIを呼び出す。503が続く場合はフォールバックモデルに自動切り替え"""
+    try:
+        # まず優先モデル（gemini-2.5-flash）で試みる
+        result = _call_gemini_with_model(api_key, parts, GEMINI_PRIMARY_MODEL, max_retries=3)
+    except Exception as e:
+        if "503" in str(e):
+            # 503が続く場合はフォールバックモデル（gemini-2.0-flash）に切り替え
+            result = _call_gemini_with_model(api_key, parts, GEMINI_FALLBACK_MODEL, max_retries=max_retries)
+        else:
+            raise
 
     response_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
     if "```json" in response_text:
