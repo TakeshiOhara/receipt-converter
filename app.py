@@ -394,6 +394,7 @@ if uploaded_files:
                 st.session_state["usage_total"]["calls"] += 1
 
                 row = build_mf_row(extracted, default_debit, default_credit)
+                row["摘要"] = f"{row['摘要']}_{uploaded_file.name}" if row.get("摘要") else uploaded_file.name
                 row["_ファイル名"] = uploaded_file.name
                 row["_生テキスト"] = preview
                 results.append(row)
